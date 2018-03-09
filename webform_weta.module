@@ -1,0 +1,321 @@
+<?php
+
+/**
+ * @file
+ * This module provides custom functionality to extend webform.
+ */
+
+/**
+ * Implements hook_theme().
+ */
+function webform_weta_theme() {
+  return array(
+    'trivia_results' => array(
+      'variables' => array(
+        'vars' => array(
+          'name' => NULL,
+          'answer' => NULL,
+          'correct_answer' => NULL,
+          'correct' => NULL,
+        ),
+      ),
+    ),
+  );
+}
+
+/**
+ * Implements hook_form_alter().
+ *
+ * Alter Select components to identify if they are quiz questions.
+ * If this is a trivia quiz, also add fields to hold the correct
+ * answer and an explanation.
+ */
+function webform_weta_form_webform_component_edit_form_alter(&$form, &$form_state, $form_id) {
+  // Add a checkbox to identify quiz questions.
+  if ($form['type']['#value'] == 'select') {
+
+    // Get node info.
+    if (isset($form['nid']['#value'])) {
+      $node = node_load($form['nid']['#value']);
+
+      if ($node->type == 'quiz_trivia' || $node->type == 'quiz_personality') {
+        // Initialize some variables to avoid errors later.
+        $quiz_item = 0;
+        $correct_answer = '';
+        $explanation = '';
+
+        // If quiz items have already been set, get the values.
+        if (isset($form['cid']['#value'])) {
+          $component = $node->webform['components'][$form['cid']['#value']];
+          if (isset($component['extra']['quiz_items']['quiz_item'])) {
+            $quiz_item = $component['extra']['quiz_items']['quiz_item'];
+          }
+          if (isset($component['extra']['quiz_items']['correct_answer'])) {
+            $correct_answer = $component['extra']['quiz_items']['correct_answer'];
+          }
+          if (isset($component['extra']['quiz_items']['explanation'])) {
+            $explanation = $component['extra']['quiz_items']['explanation']['value'];
+          }
+        }
+
+        $form['extra']['quiz_items'] = array(
+          '#type' => 'fieldset',
+          '#title' => 'Quiz Items',
+          '#collapsible' => TRUE,
+          '#collapsed' => FALSE,
+          '#weight' => 10,
+          'quiz_item' => array(
+            '#type' => 'checkbox',
+            '#title' => 'This is a quiz question.',
+            '#default_value' => $quiz_item,
+            '#description' => 'Check this option if this component is a quiz question.',
+          ),
+        );
+
+        // Extra elements for trivia quizzes.
+        if ($node->type == 'quiz_trivia') {
+          $form['extra']['quiz_items']['correct_answer'] = array(
+            '#type' => 'textfield',
+            '#title' => 'Correct Answer',
+            '#default_value' => $correct_answer,
+            '#description' => 'Enter the key from the select options above that matches the correct answer. NOTE: This is <strong>REQUIRED</strong> if this is a quiz question.',
+          );
+          $form['extra']['quiz_items']['explanation'] = array(
+            '#type' => 'text_format',
+            '#title' => 'Explanation',
+            '#format' => 'wysiwyg',
+            '#default_value' => $explanation,
+            '#description' => 'Enter any additional information about the correct answer.',
+          );
+        }
+
+      } // end node type
+    } // end node
+  }
+}
+
+/**
+ * Implements hook_node_submit().
+ *
+ * Interrupt the node save to create a url alias for the confirmation page.
+ */
+function webform_weta_node_submit($node, $form, &$form_state) {
+  if (isset($node->webform)) {
+    if (isset($node->path['alias'])) {
+      $path['alias'] = $node->path['alias'] . '/done';
+      $path['source'] = $node->path['source'] . '/done';
+      path_save($path);
+    }
+  }
+}
+
+/**
+ * Map component ids to their names for easy reference.
+ *
+ * @param object $node
+ *   The webform node object.
+ *
+ * @return array
+ *    An array with the name as the key and the cid as the value.
+ */
+function _webform_weta_webform_component_mapping($node) {
+  $mapping = array();
+  $components = $node->webform['components'];
+  foreach ($components as $i => $component) {
+    $key = $component['form_key'];
+    $mapping[$key] = $i;
+  }
+  return $mapping;
+}
+
+/**
+ * Check to see if a component has been marked as a quiz item.
+ *
+ * @param object $node
+ *    The webform node object.
+ *
+ * @return array
+ *    Component ids.
+ */
+function _webform_weta_get_quiz_component($node) {
+  $quiz_items = array();
+  foreach ($node->webform['components'] as $i => $component) {
+    if (isset($component['extra']['quiz_items']['quiz_item']) && $component['extra']['quiz_items']['quiz_item'] == 1) {
+      $quiz_items[] = $component['cid'];
+    }
+  }
+  return $quiz_items;
+}
+
+/**
+ * Get correct answers from the node.
+ *
+ * @param object $node
+ *    The webform node object.
+ *
+ * @return array
+ *    An array of correct answers with the cid as the key.
+ */
+function _webform_weta_get_quiz_correct_answer($node) {
+  $correct_answers = array();
+  foreach ($node->webform['components'] as $i => $component) {
+    if (isset($component['extra']['quiz_items']['correct_answer'])) {
+      $correct_answers[$component['cid']] = $component['extra']['quiz_items']['correct_answer'];
+    }
+  }
+  return $correct_answers;
+}
+
+/**
+ * Implements hook_webform_submission_presave().
+ *
+ * Alter webform submissions before saving them to the database.
+ */
+function webform_weta_webform_submission_presave($node, &$submission) {
+  // Map component ids to names for easy reference later.
+  $mapping = _webform_weta_webform_component_mapping($node);
+
+  // BEGIN PERSONALITY QUIZ MODS.
+  if ($node->type == 'quiz_personality') {
+    // Isolate the quiz questions from the other webform components.
+    $quiz_items = _webform_weta_get_quiz_component($node);
+
+    $answers = array();
+    foreach ($quiz_items as $i => $quiz_item) {
+      if (isset($submission->data[$quiz_item])) {
+        $answers[] = $submission->data[$quiz_item][0];
+      }
+    }
+
+    // Remove blank responses.
+    $answers = array_filter($answers);
+
+    // Determine how many of each answer was given.
+    $ans_frequency = array_count_values($answers);
+
+    // Sort descending.
+    arsort($ans_frequency);
+
+    // Which is first in the array?
+    $first = array_slice($ans_frequency, 0, 1, TRUE);
+
+    // Identify it.
+    $most[$first['key']] = $first['value'];
+
+    // Check for a tie.
+    $tie = array_intersect($ans_frequency, $most);
+
+    // Choose a random answer from the tie.
+    $result = array_rand($tie);
+
+    // Insert result into submission.
+    if (isset($mapping['result'])) {
+      $submission->data[$mapping['result']][0] = $result;
+    }
+  } // END PERSONALITY QUIZ MODS
+
+  // BEGIN TRIVIA QUIZ MODS.
+  if ($node->type == 'quiz_trivia') {
+    // Isolate the quiz questions from the other webform components.
+    $quiz_items = _webform_weta_get_quiz_component($node);
+
+    // Get the correct answers.
+    $correct_answers = _webform_weta_get_quiz_correct_answer($node);
+
+    $answers = array();
+    foreach ($quiz_items as $i => $quiz_item) {
+      if (isset($submission->data[$quiz_item])) {
+        $answers[$quiz_item] = $submission->data[$quiz_item][0];
+      }
+    }
+
+    // Compare the answers to the correct answers and count number correct.
+    $num_correct = count(array_intersect_assoc($answers, $correct_answers));
+
+    // Insert result into submission.
+    if (isset($mapping['result'])) {
+      $submission->data[$mapping['result']][0] = $num_correct;
+    }
+  } // END TRIVIA QUIZ MODS
+
+}
+
+/**
+ * Implements hook_form_alter().
+ *
+ * Show how many components are quiz questions for error checking.
+ */
+function webform_weta_form_webform_components_form_alter(&$form, &$form_state, $form_id) {
+  if ($form['#node']->type == 'quiz_personality' || $form['#node']->type == 'quiz_trivia') {
+    $quiz_items = _webform_weta_get_quiz_component($form['#node']);
+    $total_quiz_items = count($quiz_items);
+    $message = 'This quiz has ' . $total_quiz_items . ' questions.';
+    drupal_set_message(check_plain($message));
+  }
+}
+
+/**
+ * Set up trivia results display and send to theme.
+ *
+ * @param object $node
+ *    The node object.
+ * @param array $components
+ *    The webform components.
+ * @param object $submission
+ *    The webform submission.
+ *
+ * @return string
+ *   The result of theme_trivia_results().
+ */
+function webform_weta_trivia_results_display($node, $components, $submission) {
+
+  // Get the correct answers.
+  $correct_answers = _webform_weta_get_quiz_correct_answer($node);
+
+  $display = array();
+  $count = 1;
+  foreach ($components as $i => $component) {
+    $display[$count]['name'] = $component['name'];
+
+    // Convert options from string to array.
+    $items = _webform_select_options_from_text($component['extra']['items']);
+
+    $display[$count]['answer'] = NULL;
+    if (!empty($items[$submission->data[$i][0]])) {
+      $display[$count]['answer'] = $items[$submission->data[$i][0]];
+    }
+    $display[$count]['correct_answer'] = $items[$correct_answers[$i]];
+    $display[$count]['explanation'] = $component['extra']['quiz_items']['explanation'];
+
+    $display[$count]['correct'] = FALSE;
+    if ($display[$count]['answer'] == $display[$count]['correct_answer']) {
+      $display[$count]['correct'] = TRUE;
+    }
+    $count++;
+  }
+  return theme_trivia_results($display);
+}
+
+/**
+ * Theme function for individual trivia question results.
+ */
+function theme_trivia_results($variables) {
+  $total_questions = count($variables);
+  $output = '<div class="divider2"></div>';
+  $output .= '<h3>The answers</h3>';
+  foreach ($variables as $i => $question) {
+    $correct_class = '';
+    if ($question['correct'] == FALSE) {
+      $correct_class = 'trivia_incorrect';
+    }
+
+    $output .= '<p><strong>Question ' . $i . ': </strong>' . $question['name'] . '</p>';
+    $output .= '<p class="' . $correct_class . '"><strong>Your answer: </strong>' . $question['answer'] . '</p>';
+    $output .= '<p><strong>Correct answer: </strong>' . $question['correct_answer'] . '</p>';
+    $output .= check_markup($question['explanation']['value'], $question['explanation']['format']);
+    if ($i < $total_questions) {
+      $output .= '<div class="divider1"></div>';
+    }
+  }
+  return $output;
+}

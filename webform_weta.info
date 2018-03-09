@@ -1,0 +1,6 @@
+name = Webform WETA
+core = 7.x
+description = "Adds WETA's custom quiz functionality to webforms"
+package = Webform
+files[] = webform_weta.module
+dependencies[] = webform (>=7.x-3.x)
