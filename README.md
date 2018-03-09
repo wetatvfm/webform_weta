@@ -4,17 +4,18 @@ This module extends the Webform module to provide trivia and personality quizzes
 
 ## Dependencies
 
-###Required
+### Required
 **Webform**
 
-###Modules not required by this module but used by WETA for added quiz functionality
+### Modules not required by this module but used by WETA for added quiz 
+functionality
 * Entity Reference
 * Field Collection
 * Pathauto
 * Token
 * Webform Default Fields
 
-##Content Types
+## Content Types
 
 This modules presupposes that there are two webform-enabled content types:  **quiz_trivia** and **quiz_personality**. 
 
